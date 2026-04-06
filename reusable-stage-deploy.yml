@@ -1,0 +1,87 @@
+name: Reusable Stage Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: Docker image name to build and push
+        required: true
+        type: string
+      image_tag:
+        description: Docker image tag
+        required: false
+        type: string
+        default: stage
+      compose_file:
+        description: Path to docker-compose file to copy to server (if provided, triggers full deploy)
+        required: false
+        type: string
+      service_name:
+        description: Service name to restart (if empty, full deploy)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY_HOST: registry.mafbase.ru
+  SSH_KEY_PATH: /opt/ci-secrets/deploy_id_ed25519
+  STAGE_DIR: stage.mafbase.ru
+
+jobs:
+  build-image:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runner variables
+        run: |
+          test -n "$REGISTRY_USER" || (echo "REGISTRY_USER is not set on runner" && exit 1)
+          test -n "$REGISTRY_PASSWORD" || (echo "REGISTRY_PASSWORD is not set on runner" && exit 1)
+
+      - name: Log in to registry
+        run: echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+
+      - name: Build image
+        run: docker build --no-cache -t "$REGISTRY_HOST/${{ inputs.image_name }}:${{ inputs.image_tag }}" .
+
+      - name: Push image
+        run: docker push "$REGISTRY_HOST/${{ inputs.image_name }}:${{ inputs.image_tag }}"
+
+  deploy-stage:
+    runs-on: [self-hosted, linux]
+    needs: [build-image]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runner variables
+        run: |
+          test -n "$DEPLOY_HOST" || (echo "DEPLOY_HOST is not set on runner" && exit 1)
+          test -n "$DEPLOY_USER" || (echo "DEPLOY_USER is not set on runner" && exit 1)
+          test -f "$SSH_KEY_PATH" || (echo "SSH_KEY_PATH file is missing: $SSH_KEY_PATH" && exit 1)
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          cp "$SSH_KEY_PATH" ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 22 "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy docker-compose to server
+        if: inputs.compose_file != ''
+        run: scp "${{ inputs.compose_file }}" "$DEPLOY_USER@$DEPLOY_HOST":~/$STAGE_DIR/docker-compose.yml
+
+      - name: Copy stage scripts to server
+        if: inputs.compose_file != ''
+        run: |
+          scp .github/scripts/stage-restart.sh "$DEPLOY_USER@$DEPLOY_HOST":~/$STAGE_DIR/stage-restart.sh
+          scp .github/scripts/stage-teardown.sh "$DEPLOY_USER@$DEPLOY_HOST":~/$STAGE_DIR/stage-teardown.sh
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "chmod +x ~/$STAGE_DIR/stage-restart.sh ~/$STAGE_DIR/stage-teardown.sh"
+
+      - name: Deploy stage
+        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "cd ~/$STAGE_DIR && ./stage-restart.sh ${{ inputs.service_name }}"
