@@ -1,0 +1,125 @@
+name: Reusable Claude Workflow Doctor
+
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        description: 'Name of the monitored workflow'
+        required: true
+        type: string
+      workflow_status:
+        description: 'Conclusion of the workflow run'
+        required: true
+        type: string
+      workflow_url:
+        description: 'URL of the workflow run'
+        required: true
+        type: string
+      run_id:
+        description: 'ID of the workflow run'
+        required: true
+        type: string
+      head_branch:
+        description: 'Branch of the workflow run'
+        required: false
+        type: string
+        default: ''
+      head_sha:
+        description: 'Commit SHA of the workflow run'
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: 'PR number associated with the workflow run'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  actions: read
+  issues: write
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose Claude Workflow
+    runs-on: [self-hosted, macOS]
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Mafbase-workflows (for doctor script)
+        uses: actions/checkout@v4
+        with:
+          repository: Mafbase/Mafbase-workflows
+          path: _mafbase-workflows
+
+      - name: Install GitHub CLI
+        run: |
+          command -v gh >/dev/null 2>&1 || brew install gh
+          gh --version
+
+      - name: Download workflow logs
+        id: get-logs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Fetching logs for run: $RUN_ID"
+
+          gh api \
+            "repos/$REPO/actions/runs/$RUN_ID/logs" \
+            --header "Accept: application/vnd.github+json" \
+            > logs.zip 2>/dev/null || true
+
+          if [ -f logs.zip ] && [ -s logs.zip ]; then
+            mkdir -p logs_dir
+            unzip -q logs.zip -d logs_dir || true
+            find logs_dir -name "*.txt" | sort | xargs cat > all_logs.txt 2>/dev/null || true
+            echo "LOG_SIZE=$(wc -c < all_logs.txt)" >> $GITHUB_OUTPUT
+            echo "Logs fetched: $(wc -l < all_logs.txt) lines"
+          else
+            echo "" > all_logs.txt
+            echo "LOG_SIZE=0" >> $GITHUB_OUTPUT
+            echo "Warning: Could not fetch logs"
+          fi
+
+      - name: Run Doctor analysis
+        id: doctor
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          WORKFLOW_NAME: ${{ inputs.workflow_name }}
+          WORKFLOW_STATUS: ${{ inputs.workflow_status }}
+          WORKFLOW_URL: ${{ inputs.workflow_url }}
+          RUN_ID: ${{ inputs.run_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          python3 _mafbase-workflows/.github/scripts/claude_doctor.py
+
+      - name: Create GitHub Issue if problems found
+        if: steps.doctor.outputs.has_problems == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_TITLE: ${{ steps.doctor.outputs.issue_title }}
+          ISSUE_BODY_FILE: /tmp/doctor_issue_body.md
+          LABELS: ${{ steps.doctor.outputs.severity == 'critical' && 'bug,claude-doctor,critical' || 'claude-doctor' }}
+        run: |
+          gh issue create \
+            --repo "$REPO" \
+            --title "$ISSUE_TITLE" \
+            --body-file "$ISSUE_BODY_FILE" \
+            --label "$LABELS" \
+          || echo "Warning: Could not create issue (labels may not exist yet)"
+
+      - name: Create labels if missing
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create "claude-doctor" --color "0075ca" --description "Created by Claude Workflow Doctor" --repo "$REPO" 2>/dev/null || true
+          gh label create "critical" --color "d73a4a" --description "Critical severity" --repo "$REPO" 2>/dev/null || true
