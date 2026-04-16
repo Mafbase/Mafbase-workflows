@@ -1,11 +1,6 @@
 name: 'Claude Code Review'
 description: 'Composite action for automated Claude code review on PRs'
-
 inputs:
-  allowed_tools:
-    description: 'Additional allowed tools beyond base set (e.g. "Bash(flutter analyze:*)")'
-    required: false
-    default: ''
   system_prompt:
     description: 'Additional system prompt prepended to review command'
     required: false
@@ -13,7 +8,6 @@ inputs:
   claude_code_oauth_token:
     description: 'Claude Code OAuth token'
     required: true
-
 runs:
   using: 'composite'
   steps:
@@ -22,7 +16,6 @@ runs:
       run: |
         command -v gh >/dev/null 2>&1 || brew install gh
         gh --version
-
     - name: Run Claude Code Review
       uses: anthropics/claude-code-action@v1
       with:
@@ -32,8 +25,7 @@ runs:
         allowed_bots: '*'
         plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
         plugins: 'code-review@claude-code-plugins'
-        claude_args: >-
-          ${{ inputs.allowed_tools != '' && format('--allowedTools "Skill" Bash(git submodule *) Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)" "Bash(gh pr comment:*)" {0}', inputs.allowed_tools) || '--allowedTools "Skill" Bash(gh pr view:*)" Bash(git submodule *) "Bash(gh pr diff:*)" "Bash(gh api:*)" "Bash(gh pr comment:*)"' }}
+        claude_args: --dangerously-skip-permissions
         prompt: |
           ${{ inputs.system_prompt != '' && inputs.system_prompt || '' }}
           /code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
