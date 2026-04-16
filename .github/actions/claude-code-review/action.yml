@@ -33,7 +33,7 @@ runs:
         plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
         plugins: 'code-review@claude-code-plugins'
         claude_args: >-
-          ${{ inputs.allowed_tools != '' && format('--allowedTools "Skill" "Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)" {0}', inputs.allowed_tools) || '--allowedTools "Skill" "Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)"' }}
+          ${{ inputs.allowed_tools != '' && format('--allowedTools "Skill" Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)" "Bash(gh pr comment:*)" {0}', inputs.allowed_tools) || '--allowedTools "Skill" Bash(gh pr view:*)" "Bash(gh pr diff:*)" "Bash(gh api:*)" "Bash(gh pr comment:*)"' }}
         prompt: |
           ${{ inputs.system_prompt != '' && inputs.system_prompt || '' }}
           /code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
